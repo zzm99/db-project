@@ -5,6 +5,7 @@
 
 using namespace std;
 
+
 TEST(InsertTest, SingleInsert) {
     PmEHash* ehash = new PmEHash;
     kv temp;
@@ -20,6 +21,7 @@ TEST(InsertTest, SingleInsert) {
     ehash->selfDestory();
 }
 
+
 TEST(InsertTest, DuplicateInsert) {
     PmEHash* ehash = new PmEHash;
     kv temp;
@@ -30,6 +32,8 @@ TEST(InsertTest, DuplicateInsert) {
     GTEST_ASSERT_EQ(result, -1);
     ehash->selfDestory();
 }
+
+
 
 TEST(UpdateTest, SingleUpdate) {
     PmEHash* ehash = new PmEHash;
@@ -46,6 +50,8 @@ TEST(UpdateTest, SingleUpdate) {
     ehash->selfDestory();
 }
 
+
+
 TEST(SearchTest, SingleSearch) {
     PmEHash* ehash = new PmEHash;
     kv temp;
@@ -55,6 +61,7 @@ TEST(SearchTest, SingleSearch) {
     result = ehash->search(1, val);
     GTEST_ASSERT_EQ(result, 0);
     GTEST_ASSERT_EQ(val, 1);
+    ehash->selfDestory();
 }
 
 TEST(RemoveTest, SingleRemove) {
@@ -73,6 +80,8 @@ TEST(RemoveTest, SingleRemove) {
     uint64_t val = 0;
     result = ehash->search(1, val);
     GTEST_ASSERT_EQ(result, -1);
-    GTEST_ASSERT_EQ(val, 1);
+    GTEST_ASSERT_EQ(val, 0);
     ehash->selfDestory();
 }
+
+
