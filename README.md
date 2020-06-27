@@ -9,10 +9,12 @@
 ```bash
 make all
 ```
+
 ### 只编译ycsb测试
 ```bash
 make ycsb
 ```
+
 ### 只编译gtest测试
 ```bash
 make ehash
@@ -26,4 +28,9 @@ sudo ./bin/ycsb
 ### 运行gtest测试
 ```bash
 sudo ./bin/ehash_test
+```
+
+### 清除库文件和可执行文件
+```bash
+make clean
 ```

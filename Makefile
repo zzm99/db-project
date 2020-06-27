@@ -69,6 +69,3 @@ clean :
 
 cleanobj :
 	$(RM) $(GTEST_LIBS) $(OBJ_DIR)/*.o
-
-cleandata : 
-	$(RM) ../data/*
