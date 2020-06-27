@@ -159,7 +159,28 @@ kv* PmEHash::getFreeKvSlot(pm_bucket* bucket, int flag) {
  * @return: NULL
  */
 void PmEHash::splitBucket(uint64_t bucket_id) {
-
+	pm_bucket* curbucket = this->catalog.buckets_virtual_address[bucket_id];
+	if(curbucket->local_depth == this->metadata->global_depth){
+		extendCatalog();
+	}
+	vector<kv> new_kv; 
+	bool* tbitmap = curbucket->bitmap;
+	for(int i = 0; i < BUCKET_SLOT_NUM; ++i){
+		if(tbitmap[i] != 0){
+			new_kv.push_back(curbucket->slot[i]);
+    	    (curbucket->bitmap)[i] = 0;
+		}
+	}
+	uint64_t newDepth = curbucket->local_depth + 1;
+	pm_bucket newbucket;
+	curbucket->local_depth=newDepth;
+	newbucket.local_depth=newDepth;
+	this->catalog.buckets_virtual_address[bucket_id] = curbucket;
+	this->catalog.buckets_virtual_address[bucket_id + (1 << this->metadata->global_depth -1)] = &newbucket;
+	for(int i = 0; i < new_kv.size(); ++i){
+		this->remove(new_kv[i].key);
+		this->insert(new_kv[i]);
+	}
 }
 
 /**
@@ -168,7 +189,13 @@ void PmEHash::splitBucket(uint64_t bucket_id) {
  * @return: NULL
  */
 void PmEHash::mergeBucket(uint64_t bucket_id) {
-    
+    if(bucket_id < (1 << (this->metadata->global_depth-1))) {
+		this->catalog.buckets_virtual_address[bucket_id]=this->catalog.buckets_virtual_address[bucket_id + (1 << (this->metadata->global_depth - 1))];
+		this->catalog.buckets_virtual_address[bucket_id + (1 << (this->metadata->global_depth - 1))]->local_depth -= 1;
+	} else {
+		this->catalog.buckets_virtual_address[bucket_id + (1 << (this->metadata->global_depth - 1))]=this->catalog.buckets_virtual_address[bucket_id];
+		this->catalog.buckets_virtual_address[bucket_id]->local_depth -= 1;
+	}
 }
 
 /**
@@ -177,7 +204,23 @@ void PmEHash::mergeBucket(uint64_t bucket_id) {
  * @return: NULL
  */
 void PmEHash::extendCatalog() {
-
+	this->metadata->global_depth += 1;
+	this->metadata->catalog_size = (1 << (this->metadata->global_depth));
+	ehash_catalog newcatalog(this->metadata->catalog_size);
+	if(this->metadata->global_depth == 1) {
+		for(int i=0; i<2; i++) {
+			newcatalog.buckets_virtual_address[i]=getFreeSlot(newcatalog.buckets_pm_address[i]);
+		}
+	} else {
+		for(int i = 0; i < (1 << (this->metadata->global_depth - 1)); ++i){
+			newcatalog.buckets_virtual_address[i]=this->catalog.buckets_virtual_address[i];
+			newcatalog.buckets_pm_address[i]=this->catalog.buckets_pm_address[i];
+		}
+		for(int i = (1 << (this->metadata->global_depth-1)); i < (1 << this->metadata->global_depth); ++i){
+			newcatalog.buckets_virtual_address[i]=getFreeSlot(newcatalog.buckets_pm_address[i]);
+		}
+	}
+	this->catalog = newcatalog;
 }
 
 /**
@@ -185,8 +228,16 @@ void PmEHash::extendCatalog() {
  * @param pm_address&: 新槽位的持久化文件地址，作为引用参数返回
  * @return: 新槽位的虚拟地址
  */
-void* PmEHash::getFreeSlot(pm_address& new_address) {
-
+pm_bucket* PmEHash::getFreeSlot(pm_address& new_address) {
+	if(free_list.size() != 0) {
+		pm_bucket* ret = free_list.front(); 
+		free_list.pop();
+		new_address = vAddr2pmAddr[ret];
+		return ret;
+	} else {
+		allocNewPage();
+		return getFreeSlot(new_address);
+	}
 }
 
 /**
@@ -195,16 +246,42 @@ void* PmEHash::getFreeSlot(pm_address& new_address) {
  * @return: NULL
  */
 void PmEHash::allocNewPage() {
-
+	CreateNewPage(metadata->max_file_id);
+	for(int i=0; i<DATA_PAGE_SLOT_NUM; i++) {
+		free_list.push((PageList.back()->slot)[i]);
+		pm_address paddr;
+		paddr.fileId = metadata->max_file_id;
+		paddr.offset = i;
+		vAddr2pmAddr[(PageList.back()->slot)[i]] = paddr;
+		pmAddr2vAddr[paddr] = (PageList.back()->slot)[i];
+	}
+	metadata->max_file_id ++;
 }
 
 /**
- * @description: 读取旧数据文件重新载入哈希，恢复哈希关闭前的状态
+ * @description: 恢复metadata文件数据
  * @param NULL
  * @return: NULL
  */
-void PmEHash::recover() {
+void PmEHash::recoverMetadata() {
+	size_t map_len;
+	int is_pmem;
+	this->metadata = (ehash_metadata*)pmem_map_file("/mnt/mem/pm_ehash_metadata", sizeof(ehash_metadata), PMEM_FILE_CREATE, 0777, &map_len, &is_pmem);
+}
 
+/**
+ * @description: 恢复catalog文件数据
+ * @param NULL
+ * @return: NULL
+ */
+void PmEHash::recoverCatalog() {
+	size_t map_len;
+	int is_pmem;
+	ehash_catalog* cat = (ehash_catalog*)pmem_map_file("/mnt/mem/pm_ehash_catalog", sizeof(ehash_catalog), PMEM_FILE_CREATE, 0777, &map_len, &is_pmem);
+	this->catalog = *cat;
+	if(this->metadata->global_depth == 0) {
+		extendCatalog();
+	}
 }
 
 /**
@@ -213,7 +290,25 @@ void PmEHash::recover() {
  * @return: NULL
  */
 void PmEHash::mapAllPage() {
-
+	// page 恢复
+	// 获取当前目录下page+num的文件数，然后调用ReadPageFromFile(fid)获取：
+	for(uint64_t i=0; i<metadata->max_file_id; i++) {
+		ReadPageFromFile(i);
+		data_page* cur = PageList.back();
+		// 根据map过来的datapage指针的信息设置下述：
+		// 设置地址间的映射关系 （vAddr2pmAddr pmAddr2vAddr）
+		// 空闲的和使用的槽位都需要设置 （free_list）
+	    for(int j=0; j<DATA_PAGE_SLOT_NUM; j++) {
+	    	pm_address curaddress; 
+	    	curaddress.fileId = (uint32_t)i;
+	    	curaddress.offset = (uint32_t)j;
+	    	vAddr2pmAddr[(cur->slot)[j]] = curaddress;
+	    	pmAddr2vAddr[curaddress] = (cur->slot)[j];
+	    	if((cur->bitmap)[i] == 0) {
+	    		free_list.push((cur->slot)[j]);
+	    	} 
+	    }
+	}
 }
 
 /**
