@@ -4,9 +4,9 @@
 
 **成员：**
 
-- 郑卓民
-- 南樟
-- 邵文凯
+- 郑卓民 ([@zzm99](https://github.com/zzm99))
+- 南樟 ([@fakerv587](https://github.com/fakerv587))
+- 邵文凯 ([@KS0508](https://github.com/KS0508))
 
 ## 构建与测试
 **请在项目的根目录下运行以下命令**
