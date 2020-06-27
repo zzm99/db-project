@@ -1,4 +1,6 @@
 #include"pm_ehash.h"
+ 
+vector<data_page*> PageList;
 
 /**
  * @description: construct a new instance of PmEHash in a default directory
@@ -6,7 +8,9 @@
  * @return: new instance of PmEHash
  */
 PmEHash::PmEHash() {
-
+	recoverMetadata();
+	mapAllPage();
+	recoverCatalog();
 }
 /**
  * @description: persist and munmap all data in NVM
@@ -14,7 +18,21 @@ PmEHash::PmEHash() {
  * @return: NULL
  */
 PmEHash::~PmEHash() {
-
+	// 保存metadata ：
+	pmem_persist(metadata, sizeof(metadata));
+	pmem_unmap(metadata, sizeof(metadata));
+	// 保存catalog ：
+	size_t map_len;
+	int is_pmem;
+	ehash_catalog* cat = (ehash_catalog*)pmem_map_file("/mnt/mem/pm_ehash_catalog", sizeof(ehash_catalog), PMEM_FILE_CREATE, 0777, &map_len, &is_pmem);
+	*cat = this->catalog;
+	pmem_persist(cat, sizeof(cat));
+	pmem_unmap(cat, sizeof(cat));
+	// 保存page ：
+	for(auto p: PageList) {
+		WritePageToFile(p);
+		pmem_unmap(p, sizeof(p));
+	}
 }
 
 /**
@@ -23,7 +41,17 @@ PmEHash::~PmEHash() {
  * @return: 0 = insert successfully, -1 = fail to insert(target data with same key exist)
  */
 int PmEHash::insert(kv new_kv_pair) {
-    return 1;
+    uint64_t return_val = 0;
+    if(search(new_kv_pair.key, return_val) == 0){
+    	return -1;
+    }
+    pm_bucket* bucket = getFreeBucket(new_kv_pair.key);
+    kv* freePlace = getFreeKvSlot(bucket, 1);
+    *freePlace = new_kv_pair;
+    // persist:
+    pm_address cur = vAddr2pmAddr[bucket];
+    WritePageToFile(PageList[cur.fileId]);
+    return 0;
 }
 
 /**
@@ -32,7 +60,17 @@ int PmEHash::insert(kv new_kv_pair) {
  * @return: 0 = removing successfully, -1 = fail to remove(target data doesn't exist)
  */
 int PmEHash::remove(uint64_t key) {
-    return 1;
+    uint64_t h = hashFunc(key);
+    kv* tslot = this->catalog.buckets_virtual_address[h]->slot;
+    bool* tbitmap = this->catalog.buckets_virtual_address[h]->bitmap;
+    for(int i = 0; i < BUCKET_SLOT_NUM; i++){
+		if(tbitmap[i] == 1 && tslot[i].key == key) {
+			this->catalog.buckets_virtual_address[h]->bitmap[i] = 0;
+			mergeBucket(h);
+			return 0;
+		}
+    }
+    return -1;
 }
 /**
  * @description: 更新现存的键值对的值
@@ -40,7 +78,14 @@ int PmEHash::remove(uint64_t key) {
  * @return: 0 = update successfully, -1 = fail to update(target data doesn't exist)
  */
 int PmEHash::update(kv kv_pair) {
-    return 1;
+    uint64_t return_val = 0;
+    if(search(kv_pair.key, return_val) == 0) {
+    	remove(kv_pair.key);
+    	insert(kv_pair);
+    	return 0;
+    } else {
+    	return -1;
+    }
 }
 /**
  * @description: 查找目标键值对数据，将返回值放在参数里的引用类型进行返回
@@ -49,7 +94,17 @@ int PmEHash::update(kv kv_pair) {
  * @return: 0 = search successfully, -1 = fail to search(target data doesn't exist) 
  */
 int PmEHash::search(uint64_t key, uint64_t& return_val) {
-    return 1;
+    uint64_t h = hashFunc(key);
+	if(h >= this->metadata->catalog_size) return -1;
+    kv* tslot = this->catalog.buckets_virtual_address[h]->slot;
+    bool* tbitmap = this->catalog.buckets_virtual_address[h]->bitmap;
+    for(int i=0; i<BUCKET_SLOT_NUM; i++) {
+		if(tbitmap[i] == 1 && tslot[i].key == key) {
+			return_val = tslot[i].value;
+    		return 0;
+		}
+    }
+    return -1;
 }
 
 /**
@@ -58,7 +113,9 @@ int PmEHash::search(uint64_t key, uint64_t& return_val) {
  * @return: 返回键所属的桶号
  */
 uint64_t PmEHash::hashFunc(uint64_t key) {
-
+	uint64_t gd = this->metadata->global_depth;
+	uint64_t h = key & ((1<<gd)-1);
+	return h;
 }
 
 /**
@@ -67,16 +124,33 @@ uint64_t PmEHash::hashFunc(uint64_t key) {
  * @return: 空闲桶的虚拟地址
  */
 pm_bucket* PmEHash::getFreeBucket(uint64_t key) {
-
+	uint64_t h = hashFunc(key);
+	pm_bucket* curbucket = this->catalog.buckets_virtual_address[h];
+	if(getFreeKvSlot(curbucket, 0) == NULL) {
+		splitBucket(h);
+		h = hashFunc(key);
+		return this->catalog.buckets_virtual_address[h];
+	} else {
+		return curbucket;
+	}
 }
 
 /**
- * @description: 获得空闲桶内第一个空闲的位置供键值对插入
- * @param pm_bucket* bucket
+ * @description: 获得空闲桶内第一个空闲的位置供键值对插入, 传入的flag若为0，则只是简单查询是否有空闲slot，若为1，则是真正返回slot，需要将标志位置1
+ * @param pm_bucket* bucket， int flag
  * @return: 空闲键值对位置的虚拟地址
  */
-kv* PmEHash::getFreeKvSlot(pm_bucket* bucket) {
-
+kv* PmEHash::getFreeKvSlot(pm_bucket* bucket, int flag) {
+	bool* tbitmap = bucket->bitmap;
+	for(int i=0; i<BUCKET_SLOT_NUM; i++){
+		if(tbitmap[i] == 0) {
+			if(flag == 1) {
+				(bucket->bitmap)[i] = 1;
+			}
+			return &(bucket->slot[i]);
+		}	
+	}
+	return NULL;
 }
 
 /**
@@ -148,5 +222,7 @@ void PmEHash::mapAllPage() {
  * @return: NULL
  */
 void PmEHash::selfDestory() {
-
+	char t[100];
+	sprintf(t, "rm -rf %s/*", PM_EHASH_DIRECTORY);
+	system(t);
 }
