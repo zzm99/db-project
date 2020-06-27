@@ -14,7 +14,7 @@ BIN_DIR = ./bin
 HEADERS = $(HEADER_DIR)/*.h 
 
 CPPFLAGS += -isystem $(GTEST_DIR)/include
-CXXFLAGS += -Wall -g -pthread -std=c++17 -fno-omit-frame-pointer
+CXXFLAGS += -Wall -O3 -pthread -std=c++17 -fno-omit-frame-pointer
 PMEMFLAGS = -lpmem
 
 EHASH_TEST = $(BIN_DIR)/ehash_test

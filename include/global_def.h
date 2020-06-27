@@ -10,11 +10,12 @@
 #include <queue>
 #include <stdio.h>
 #include <string>
+#include <unordered_map>
 #include <vector>
 using namespace std;
 
-#define DATA_PAGE_SLOT_NUM 16
-#define BUCKET_SLOT_NUM 16
+#define DATA_PAGE_SLOT_NUM 32
+#define BUCKET_SLOT_NUM 32
 #define DEFAULT_CATALOG_SIZE 16
 #define META_NAME "pm_ehash_metadata"
 #define CATALOG_NAME "pm_ehash_catalog"
@@ -38,6 +39,7 @@ typedef struct pm_address {
         , offset(t_offset)
     {
     }
+    bool operator==(const struct pm_address& t1) const { return (fileId == t1.fileId) && (offset == t1.offset); }
     bool operator<(const struct pm_address& t1) const
     {
         if (fileId == t1.fileId)
@@ -45,6 +47,14 @@ typedef struct pm_address {
         return fileId < t1.fileId;
     }
 } pm_address;
+
+template <> class std::hash<pm_address> {
+public:
+    size_t operator()(const pm_address& addr) const
+    {
+        return (hash<unsigned int>()(addr.fileId) << 4) ^ hash<unsigned int>()(addr.offset);
+    }
+};
 
 /*
 the data entry stored by the ehash
